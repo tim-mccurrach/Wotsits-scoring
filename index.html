@@ -22,7 +22,7 @@
                         ticks, score readout, and the falling/settling wotsits.
     • TeamCard        — a single team: name, score, +/- buttons, one cylinder.
     • Scoreboard      — controller + layout. Single source of truth for state,
-                        two-row responsive grid, management panel, fullscreen,
+                        two-row responsive grid, management modal, fullscreen,
                         and debounced persistence.
 
   ── Data flow (unidirectional) ───────────────────────────────────────────────
@@ -97,7 +97,7 @@
     gap: clamp(6px, 1.2vh, 14px);
   }
 
-  /* ── Header / management bar ───────────────────────────────────────────── */
+  /* ── Header / action bar ───────────────────────────────────────────────── */
   .topbar {
     flex: 0 0 auto;
     display: flex;
@@ -142,34 +142,65 @@
   .bar-btn.accent:hover { background: var(--accent-glow); }
   .bar-btn.ghost { background: transparent; }
 
-  /* ── Collapsible management panel ──────────────────────────────────────── */
-  .panel {
-    flex: 0 0 auto;
-    overflow: hidden;
-    max-height: 320px;
-    transition: max-height .35s ease, opacity .25s ease, padding .25s ease,
-                margin .25s ease;
+  /* ── Team management modal ─────────────────────────────────────────────── */
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    padding: clamp(12px, 3vw, 32px);
+    background: rgba(3, 7, 12, 0.68);
+    backdrop-filter: blur(5px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
+  }
+  .modal.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .modal-panel {
+    width: min(760px, 100%);
+    max-height: min(82vh, 680px);
+    overflow: auto;
     background: linear-gradient(180deg, #15212fcc, #101a26cc);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: var(--shadow-soft);
+    transform: translateY(-8px) scale(.98);
+    transition: transform .18s ease;
   }
-  .panel.collapsed {
-    max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0;
-    border-width: 0; margin: 0;
-    pointer-events: none;
+  .modal.open .modal-panel {
+    transform: translateY(0) scale(1);
   }
   .panel-inner { padding: 14px; }
+  .modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .modal-header h2 {
+    margin: 0;
+    font-size: clamp(20px, 2vw, 26px);
+  }
+  .modal-header p {
+    margin: 4px 0 0;
+    color: var(--ink-dim);
+    font-size: 13px;
+  }
   .panel-row {
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
     margin-bottom: 12px;
   }
   .panel-row:last-child { margin-bottom: 0; }
-  .panel h3 {
+  .modal-panel h3 {
     margin: 0 8px 0 0; font-size: 13px; text-transform: uppercase;
     letter-spacing: .12em; color: var(--ink-dim); font-weight: 800;
   }
-  .panel .hint { color: var(--ink-dim); font-size: 12px; }
+  .modal-panel .hint { color: var(--ink-dim); font-size: 12px; }
 
   .team-admin-list {
     display: flex; flex-wrap: wrap; gap: 8px; width: 100%;
@@ -202,6 +233,9 @@
   }
   .icon-btn:hover { background: var(--danger); color: #fff; }
   .icon-btn:active { transform: scale(.92); }
+  .modal-close {
+    flex: 0 0 auto;
+  }
 
   /* ===========================================================================
      BOARD  — exactly two rows of TeamCards. Even spacing, responsive sizing.
@@ -440,7 +474,10 @@
 
   /* Small screens: shrink controls a touch. */
   @media (max-width: 640px) {
-    .brand span.full { display: none; }
+    .bar-btn .full { display: none; }
+    .modal {
+      align-items: start;
+    }
   }
 </style>
 </head>
@@ -920,7 +957,7 @@
   /* ==========================================================================
      4) SCOREBOARD  — controller + layout. The single source of truth.
         Holds state.teams, persists via StorageService, lays cards out in exactly
-        two rows, and owns the management panel, fullscreen and global controls.
+        two rows, and owns the management modal, fullscreen and global controls.
      ========================================================================== */
   class Scoreboard {
     constructor(root, storage) {
@@ -958,7 +995,7 @@
       this._saveTimer = setTimeout(() => this.storage.save(this.state), 250);
     }
 
-    /* ---- Top bar + management panel --------------------------------------- */
+    /* ---- Top bar + management modal --------------------------------------- */
     _buildChrome() {
       // Top bar
       const bar = document.createElement("div");
@@ -969,30 +1006,45 @@
           <span>Wotsit <b>Scoreboard</b></span>
         </div>
         <div class="spacer"></div>
-        <button class="bar-btn ghost" data-act="toggle-panel" aria-expanded="true">⚙︎ <span class="full">Manage</span></button>
+        <button class="bar-btn ghost" data-act="open-team-modal" aria-haspopup="dialog" aria-expanded="false" aria-controls="team-management-modal">⚙︎ <span class="full">Teams</span></button>
         <button class="bar-btn ghost" data-act="fullscreen">⛶ <span class="full">Fullscreen</span></button>
       `;
       this.bar = bar;
 
-      // Management panel
-      const panel = document.createElement("div");
-      panel.className = "panel";
-      panel.innerHTML = `
-        <div class="panel-inner">
-          <div class="panel-row">
-            <h3>Teams</h3>
-            <button class="bar-btn accent" data-act="add-team">＋ Add team</button>
-            <button class="bar-btn" data-act="reset-scores">↺ Reset all scores</button>
-            <span class="hint" data-role="count"></span>
-          </div>
-          <div class="panel-row">
-            <div class="team-admin-list" data-role="admin-list"></div>
+      // Management modal
+      const modal = document.createElement("div");
+      modal.className = "modal";
+      modal.id = "team-management-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-labelledby", "team-management-title");
+      modal.setAttribute("aria-hidden", "true");
+      modal.hidden = true;
+      modal.innerHTML = `
+        <div class="modal-panel" role="document">
+          <div class="panel-inner">
+            <div class="modal-header">
+              <div>
+                <h2 id="team-management-title">Manage teams</h2>
+                <p>Rename teams, add or remove teams, and reset everyone back to zero.</p>
+              </div>
+              <button class="icon-btn modal-close" data-act="close-team-modal" aria-label="Close team management">✕</button>
+            </div>
+            <div class="panel-row">
+              <h3>Teams</h3>
+              <button class="bar-btn accent" data-act="add-team">＋ Add team</button>
+              <button class="bar-btn" data-act="reset-scores">↺ Reset all scores</button>
+              <span class="hint" data-role="count"></span>
+            </div>
+            <div class="panel-row">
+              <div class="team-admin-list" data-role="admin-list"></div>
+            </div>
           </div>
         </div>
       `;
-      this.panel = panel;
-      this.adminList = panel.querySelector('[data-role="admin-list"]');
-      this.countHint = panel.querySelector('[data-role="count"]');
+      this.modal = modal;
+      this.adminList = modal.querySelector('[data-role="admin-list"]');
+      this.countHint = modal.querySelector('[data-role="count"]');
 
       // Board container with two rows.
       const board = document.createElement("div");
@@ -1001,18 +1053,25 @@
       this.board = board;
       this.rows = [board.querySelector('[data-row="0"]'), board.querySelector('[data-row="1"]')];
 
-      this.root.append(bar, panel, board);
+      this.root.append(bar, modal, board);
 
-      // Delegate top-bar + panel clicks.
+      // Delegate top-bar + modal clicks.
       bar.addEventListener("click", (e) => this._onChromeClick(e));
-      panel.addEventListener("click", (e) => this._onChromeClick(e));
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) {
+          this.closeTeamModal();
+          return;
+        }
+        this._onChromeClick(e);
+      });
     }
 
     _onChromeClick(e) {
       const btn = e.target.closest("[data-act]");
       if (!btn) return;
       const act = btn.getAttribute("data-act");
-      if (act === "toggle-panel") this.togglePanel();
+      if (act === "open-team-modal") this.openTeamModal(btn);
+      else if (act === "close-team-modal") this.closeTeamModal();
       else if (act === "fullscreen") this.toggleFullscreen();
       else if (act === "add-team") this.addTeam();
       else if (act === "reset-scores") this.resetScores();
@@ -1033,7 +1092,7 @@
         this.board.innerHTML = `
           <div class="empty-state">
             <h2>No teams yet</h2>
-            <p>Open <strong>Manage</strong> and add a team to get started.</p>
+            <p>Open <strong>Teams</strong> and add a team to get started.</p>
           </div>`;
         // Re-acquire row refs next time teams exist.
         this._renderAdminList();
@@ -1085,7 +1144,7 @@
     }
 
     _syncAdminButtons() {
-      const addBtn = this.panel.querySelector('[data-act="add-team"]');
+      const addBtn = this.modal.querySelector('[data-act="add-team"]');
       if (addBtn) addBtn.disabled = this.state.teams.length >= CONFIG.MAX_TEAMS;
       // Prevent deleting below MIN_TEAMS.
       const delBtns = this.adminList.querySelectorAll('[data-act="delete-team"]');
@@ -1137,11 +1196,59 @@
       this._persist(true);
     }
 
-    /* ---- Panel collapse / fullscreen -------------------------------------- */
-    togglePanel() {
-      const collapsed = this.panel.classList.toggle("collapsed");
-      const btn = this.bar.querySelector('[data-act="toggle-panel"]');
-      if (btn) btn.setAttribute("aria-expanded", String(!collapsed));
+    /* ---- Team management modal / fullscreen ------------------------------- */
+    isTeamModalOpen() {
+      return this.modal.classList.contains("open");
+    }
+
+    openTeamModal(trigger) {
+      this._lastModalTrigger = trigger || document.activeElement;
+      clearTimeout(this._modalCloseTimer);
+      this.modal.hidden = false;
+      this.modal.setAttribute("aria-hidden", "false");
+      const btn = this.bar.querySelector('[data-act="open-team-modal"]');
+      if (btn) btn.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => {
+        this.modal.classList.add("open");
+        const closeBtn = this.modal.querySelector('[data-act="close-team-modal"]');
+        if (closeBtn) closeBtn.focus();
+      });
+    }
+
+    closeTeamModal() {
+      if (!this.isTeamModalOpen()) return;
+      this.modal.classList.remove("open");
+      this.modal.setAttribute("aria-hidden", "true");
+      clearTimeout(this._modalCloseTimer);
+      this._modalCloseTimer = setTimeout(() => {
+        if (!this.isTeamModalOpen()) this.modal.hidden = true;
+      }, 180);
+      const btn = this.bar.querySelector('[data-act="open-team-modal"]');
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      if (this._lastModalTrigger && document.contains(this._lastModalTrigger)) {
+        this._lastModalTrigger.focus();
+      }
+    }
+
+    toggleTeamModal() {
+      if (this.isTeamModalOpen()) this.closeTeamModal();
+      else this.openTeamModal();
+    }
+
+    _trapModalFocus(e) {
+      const focusable = Array.from(this.modal.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
 
     toggleFullscreen() {
@@ -1158,13 +1265,22 @@
     }
 
     // Keyboard convenience: Enter on a focused +/- already works; add Esc to
-    // reveal the panel if hidden, and "f" for fullscreen.
+    // close the modal, "m" for team management, and "f" for fullscreen.
     _wireGlobalKeys() {
       document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && this.isTeamModalOpen()) {
+          e.preventDefault();
+          this.closeTeamModal();
+          return;
+        }
+        if (e.key === "Tab" && this.isTeamModalOpen()) {
+          this._trapModalFocus(e);
+          return;
+        }
         const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
         if (typing) return;
         if (e.key.toLowerCase() === "f") this.toggleFullscreen();
-        else if (e.key.toLowerCase() === "m") this.togglePanel();
+        else if (e.key.toLowerCase() === "m") this.toggleTeamModal();
       });
     }
   }
