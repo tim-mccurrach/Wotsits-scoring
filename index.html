@@ -1208,11 +1208,10 @@
       this.modal.setAttribute("aria-hidden", "false");
       const btn = this.bar.querySelector('[data-act="open-team-modal"]');
       if (btn) btn.setAttribute("aria-expanded", "true");
-      requestAnimationFrame(() => {
-        this.modal.classList.add("open");
-        const closeBtn = this.modal.querySelector('[data-act="close-team-modal"]');
-        if (closeBtn) closeBtn.focus();
-      });
+      void this.modal.offsetWidth; // ensure the opacity transition starts from the hidden state
+      this.modal.classList.add("open");
+      const closeBtn = this.modal.querySelector('[data-act="close-team-modal"]');
+      if (closeBtn) closeBtn.focus();
     }
 
     closeTeamModal() {
@@ -1242,7 +1241,10 @@
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      if (!this.modal.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
