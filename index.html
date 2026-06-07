@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#0d1117" />
+<title>Wotsit Scoreboard</title>
+<!--
+  ============================================================================
+  WOTSIT CYLINDER SCOREBOARD  —  offline-first, single-file SPA
+  ============================================================================
+
+  A live, projector-friendly score tracker. Each team is rendered as a large
+  transparent measuring cylinder that fills bottom-up with animated, individually
+  rendered orange "Wotsit" puffs as the team's score increases.
+
+  ── Architecture (component-based, vanilla ES6) ──────────────────────────────
+  Business logic is kept separate from rendering logic. Four components:
+
+    • StorageService  — pure data layer. Loads/saves/resets state in localStorage.
+    • WotsitCylinder  — rendering + animation only. Glass cylinder, measuring
+                        ticks, score readout, and the falling/settling wotsits.
+    • TeamCard        — a single team: name, score, +/- buttons, one cylinder.
+    • Scoreboard      — controller + layout. Single source of truth for state,
+                        two-row responsive grid, management panel, fullscreen,
+                        and debounced persistence.
+
+  ── Data flow (unidirectional) ───────────────────────────────────────────────
+    user → TeamCard button → callback → Scoreboard mutates state → persists →
+    Scoreboard tells the affected TeamCard/WotsitCylinder to animate to the new
+    value. Components never reach into each other's DOM.
+
+  No build step, no server, no external requests. Open index.html and it works.
+  ============================================================================
+-->
+<style>
+  /* ===========================================================================
+     THEME TOKENS — tweak these to re-skin the whole app.
+     High-contrast dark stage so the orange wotsits pop on a projector.
+     =========================================================================== */
+  :root {
+    --bg-0: #0a0e14;          /* deepest background */
+    --bg-1: #0f1622;          /* stage background */
+    --bg-2: #16203040;        /* translucent panels */
+    --ink: #f5f8ff;           /* primary text */
+    --ink-dim: #9fb0c8;       /* secondary text */
+    --line: #2a3850;          /* subtle borders */
+
+    --accent: #ff8a1e;        /* Wotsit orange (brand accent) */
+    --accent-2: #ff6b00;      /* deeper orange */
+    --accent-glow: #ffae5e;   /* highlight orange */
+    --good: #3ddc84;
+    --danger: #ff5b6e;
+
+    /* Glass cylinder */
+    --glass-fill: rgba(180, 210, 255, 0.06);
+    --glass-edge: rgba(190, 220, 255, 0.55);
+    --glass-shine: rgba(255, 255, 255, 0.85);
+
+    --radius: 16px;
+    --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.45);
+    --shadow-pop: 0 6px 18px rgba(0, 0, 0, 0.5);
+
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+            Arial, "Helvetica Neue", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 800px at 50% -10%, #14203200, #0000),
+      var(--bg-1);
+    overflow: hidden;                 /* the stage manages its own layout */
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Utility: visually hidden but available to screen readers */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* ===========================================================================
+     STAGE  — full-viewport vertical layout: header bar + board.
+     =========================================================================== */
+  .stage {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(8px, 1.4vh, 18px);
+    gap: clamp(6px, 1.2vh, 14px);
+  }
+
+  /* ── Header / management bar ───────────────────────────────────────────── */
+  .topbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    background: linear-gradient(180deg, #1a2738cc, #121c2acc);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: blur(6px);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 12px;
+    font-weight: 800; letter-spacing: 0.3px;
+    font-size: clamp(15px, 1.6vw, 22px);
+    white-space: nowrap;
+  }
+  .brand .logo {
+    width: 30px; height: 30px; flex: 0 0 auto;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,.4));
+  }
+  .brand b { color: var(--accent); }
+  .spacer { flex: 1 1 auto; }
+
+  .bar-btn {
+    appearance: none; cursor: pointer;
+    font-family: inherit; font-weight: 700; font-size: 14px;
+    color: var(--ink);
+    background: #1f2c3e;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 14px;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: transform .08s ease, background .15s ease, border-color .15s ease;
+    user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .bar-btn:hover { background: #27374d; border-color: #3a4f6e; }
+  .bar-btn:active { transform: translateY(1px) scale(.98); }
+  .bar-btn.accent { background: var(--accent); color: #2a1500; border-color: transparent; }
+  .bar-btn.accent:hover { background: var(--accent-glow); }
+  .bar-btn.ghost { background: transparent; }
+
+  /* ── Collapsible management panel ──────────────────────────────────────── */
+  .panel {
+    flex: 0 0 auto;
+    overflow: hidden;
+    max-height: 320px;
+    transition: max-height .35s ease, opacity .25s ease, padding .25s ease,
+                margin .25s ease;
+    background: linear-gradient(180deg, #15212fcc, #101a26cc);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-soft);
+  }
+  .panel.collapsed {
+    max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0;
+    border-width: 0; margin: 0;
+    pointer-events: none;
+  }
+  .panel-inner { padding: 14px; }
+  .panel-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin-bottom: 12px;
+  }
+  .panel-row:last-child { margin-bottom: 0; }
+  .panel h3 {
+    margin: 0 8px 0 0; font-size: 13px; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--ink-dim); font-weight: 800;
+  }
+  .panel .hint { color: var(--ink-dim); font-size: 12px; }
+
+  .team-admin-list {
+    display: flex; flex-wrap: wrap; gap: 8px; width: 100%;
+  }
+  .team-admin {
+    display: flex; align-items: center; gap: 6px;
+    background: #18242f; border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px 8px;
+  }
+  .team-admin .swatch {
+    width: 12px; height: 12px; border-radius: 50%;
+    box-shadow: 0 0 0 2px #0004 inset;
+  }
+  .team-admin input {
+    width: 110px; background: transparent; border: none; color: var(--ink);
+    font-family: inherit; font-size: 14px; font-weight: 700; padding: 4px 2px;
+    border-bottom: 1px dashed transparent;
+  }
+  .team-admin input:focus {
+    outline: none; border-bottom-color: var(--accent);
+  }
+  .icon-btn {
+    appearance: none; cursor: pointer; border: none;
+    width: 26px; height: 26px; border-radius: 8px;
+    display: grid; place-items: center;
+    background: #243245; color: var(--ink-dim);
+    font-weight: 900; font-size: 15px; line-height: 1;
+    transition: background .15s ease, color .15s ease, transform .08s ease;
+    touch-action: manipulation;
+  }
+  .icon-btn:hover { background: var(--danger); color: #fff; }
+  .icon-btn:active { transform: scale(.92); }
+
+  /* ===========================================================================
+     BOARD  — exactly two rows of TeamCards. Even spacing, responsive sizing.
+     =========================================================================== */
+  .board {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(8px, 1.4vh, 18px);
+  }
+  .team-row {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    gap: clamp(8px, 1vw, 20px);
+  }
+  .team-row:empty { display: none; }
+
+  /* ── TeamCard ──────────────────────────────────────────────────────────── */
+  .card {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: clamp(4px, 0.8vh, 10px);
+    padding: clamp(6px, 1vh, 14px) clamp(4px, 0.6vw, 12px);
+    background: linear-gradient(180deg, #131d2980, #0d151f80);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-soft);
+    position: relative;
+  }
+  .card-name {
+    font-weight: 800;
+    font-size: clamp(14px, 1.5vw, 24px);
+    letter-spacing: .2px;
+    text-align: center;
+    max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .card-name .dot {
+    display: inline-block; width: .62em; height: .62em; border-radius: 50%;
+    margin-right: .4em; vertical-align: baseline;
+    box-shadow: 0 0 0 2px #0005 inset, 0 0 10px var(--team-color, var(--accent));
+    background: var(--team-color, var(--accent));
+  }
+
+  /* ── Controls (the +/- buttons) ────────────────────────────────────────── */
+  .controls {
+    display: flex; align-items: center; justify-content: center;
+    gap: clamp(8px, 1vw, 18px);
+    width: 100%;
+  }
+  .score-btn {
+    appearance: none; cursor: pointer; border: none;
+    width: clamp(44px, 4.2vw, 68px);
+    height: clamp(44px, 4.2vw, 68px);
+    border-radius: 50%;
+    font-size: clamp(26px, 2.6vw, 40px);
+    font-weight: 900; line-height: 1;
+    display: grid; place-items: center;
+    color: #fff;
+    box-shadow: var(--shadow-pop);
+    transition: transform .08s ease, filter .15s ease, box-shadow .15s ease;
+    user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .score-btn.plus {
+    background: radial-gradient(circle at 35% 30%, var(--accent-glow), var(--accent-2));
+    color: #2a1400;
+  }
+  .score-btn.minus {
+    background: radial-gradient(circle at 35% 30%, #44566f, #26333f);
+  }
+  .score-btn:hover { filter: brightness(1.08); }
+  .score-btn:active { transform: scale(.9); }
+  .score-btn:focus-visible { outline: 3px solid var(--accent-glow); outline-offset: 3px; }
+  .score-btn:disabled { opacity: .35; cursor: not-allowed; filter: grayscale(.4); }
+
+  /* ===========================================================================
+     WOTSIT CYLINDER — transparent measuring cylinder with rounded top.
+     =========================================================================== */
+  .cyl {
+    --rim: 12px;                       /* rounded-top radius */
+    position: relative;
+    flex: 1 1 auto;
+    width: clamp(90px, 9vw, 150px);
+    min-height: 0;
+    margin: 0 auto;
+  }
+  /* Glass body */
+  .cyl-glass {
+    position: absolute; inset: 0;
+    border: 2px solid var(--glass-edge);
+    border-top-left-radius: 48% 26px;
+    border-top-right-radius: 48% 26px;
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 14px;
+    background:
+      linear-gradient(90deg,
+        rgba(255,255,255,0.10) 0%,
+        rgba(255,255,255,0.02) 14%,
+        rgba(255,255,255,0.00) 50%,
+        rgba(255,255,255,0.05) 86%,
+        rgba(255,255,255,0.14) 100%),
+      var(--glass-fill);
+    box-shadow:
+      inset 0 0 22px rgba(255,255,255,0.06),
+      inset 0 -14px 30px rgba(0,0,0,0.25),
+      var(--shadow-soft);
+    overflow: hidden;
+    backdrop-filter: blur(1px);
+  }
+  /* Vertical moving shine streak on the glass */
+  .cyl-glass::before {
+    content: "";
+    position: absolute; top: 4%; bottom: 4%; left: 16%;
+    width: 10%;
+    border-radius: 50%;
+    background: linear-gradient(180deg,
+      rgba(255,255,255,0.5), rgba(255,255,255,0.04));
+    filter: blur(1px);
+    opacity: .55;
+    pointer-events: none;
+  }
+
+  /* Measuring ticks live in their own overlay so they sit above the wotsits. */
+  .cyl-ticks {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .tick {
+    position: absolute; right: 0;
+    height: 0; border-top: 2px solid rgba(220,235,255,.45);
+  }
+  .tick.major { width: 30%; border-top-color: rgba(230,242,255,.7); }
+  .tick.minor { width: 16%; }
+  .tick-label {
+    position: absolute; right: 34%;
+    transform: translateY(-50%);
+    font-size: clamp(8px, .8vw, 11px);
+    font-weight: 700; color: rgba(220,235,255,.7);
+    pointer-events: none;
+  }
+
+  /* The layer that actually holds the wotsits. */
+  .cyl-fill {
+    position: absolute; inset: 0;
+    overflow: hidden;
+    border-bottom-left-radius: 13px;
+    border-bottom-right-radius: 13px;
+    z-index: 1;
+  }
+
+  /* Score readout overlaid on the cylinder. */
+  .cyl-score {
+    position: absolute; left: 0; right: 0; top: 8%;
+    text-align: center;
+    z-index: 4;
+    pointer-events: none;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(28px, 3.4vw, 56px);
+    color: #fff;
+    text-shadow: 0 2px 8px rgba(0,0,0,.65), 0 0 18px rgba(0,0,0,.5);
+    transition: transform .18s ease;
+  }
+  .cyl-score.bump { transform: scale(1.18); }
+
+  /* ── A single Wotsit puff (pure CSS shape) ─────────────────────────────────
+     An organic bumpy orange oblong with a soft speckled highlight. Kept cheap:
+     no per-element box-shadow blur on the settled state (only transform/opacity
+     are animated). Variation (rotation/scale/tint) is applied inline per wotsit.
+  */
+  .wotsit {
+    position: absolute;
+    left: 0; top: 0;
+    width: var(--wsz, 18px);
+    height: calc(var(--wsz, 18px) * 0.64);
+    background:
+      radial-gradient(circle at 32% 30%, var(--w-hi, #ffc888) 0 18%, transparent 42%),
+      linear-gradient(160deg, var(--w-lo, #ff7a12), var(--w-hi2, #e85d00));
+    border-radius: 46% 54% 50% 50% / 58% 42% 60% 40%;
+    will-change: transform;            /* removed after settle via JS */
+    transform: translate3d(var(--x,0), var(--y,0), 0)
+               rotate(var(--rot,0deg)) scale(var(--s,1));
+    /* tiny dimples to read as a cheese puff */
+    box-shadow:
+      inset -1px -1px 2px rgba(120,40,0,.45),
+      inset 1px 1px 2px rgba(255,210,150,.5);
+  }
+  /* Settled wotsits drop will-change to avoid layer bloat / memory growth. */
+  .wotsit.settled { will-change: auto; }
+
+  /* Falling animation: fall in with an overshoot bounce, then a tiny settle.
+     Only transform/opacity → compositor-only, GPU friendly. */
+  @keyframes wotsit-drop {
+    0%   { transform: translate3d(var(--x), var(--from-y), 0) rotate(var(--rot)) scale(var(--s)); opacity: 0; }
+    8%   { opacity: 1; }
+    70%  { transform: translate3d(var(--x), calc(var(--y) - 4px), 0) rotate(var(--rot)) scale(calc(var(--s) * 1.06)); }
+    85%  { transform: translate3d(var(--x), calc(var(--y) + 2px), 0) rotate(var(--rot)) scale(calc(var(--s) * 0.98)); }
+    100% { transform: translate3d(var(--x), var(--y), 0) rotate(var(--rot)) scale(var(--s)); opacity: 1; }
+  }
+  .wotsit.dropping {
+    animation: wotsit-drop var(--drop-dur, 620ms) cubic-bezier(.34,1.2,.46,1) both;
+    animation-delay: var(--delay, 0ms);
+  }
+  /* Removal animation: shrink + fade. */
+  @keyframes wotsit-pop-out {
+    0%   { opacity: 1; }
+    100% { transform: translate3d(var(--x), calc(var(--y) - 10px), 0) rotate(var(--rot)) scale(0); opacity: 0; }
+  }
+  .wotsit.removing {
+    animation: wotsit-pop-out 260ms ease-in both;
+  }
+
+  /* Honour users who prefer reduced motion: keep functionality, drop motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .wotsit.dropping { animation-duration: 1ms; }
+    .wotsit.removing { animation-duration: 1ms; }
+    .cyl-score { transition: none; }
+  }
+
+  /* Empty-state message when all teams are deleted. */
+  .empty-state {
+    margin: auto; text-align: center; color: var(--ink-dim); max-width: 420px;
+  }
+  .empty-state h2 { color: var(--ink); font-size: 22px; margin: 0 0 8px; }
+
+  /* Small screens: shrink controls a touch. */
+  @media (max-width: 640px) {
+    .brand span.full { display: none; }
+  }
+</style>
+</head>
+<body>
+  <!-- App root. The Scoreboard component renders everything into #app. -->
+  <div id="app" class="stage"></div>
+
+  <!-- Reusable inline SVG icons (kept tiny; referenced via <use>). -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <!-- A stylised wotsit logo used in the brand. -->
+      <symbol id="i-wotsit" viewBox="0 0 32 32">
+        <path d="M6 18c-3 0-5-3-3-6 1-2 4-2 5-1 1-3 5-5 9-3 3-2 8 0 8 4 3 0 5 4 2 7-2 2-5 1-6 0-2 3-7 4-10 1-2 1-4 0-5-2z"
+              fill="#ff8a1e" stroke="#d65b00" stroke-width="1.2"/>
+      </symbol>
+    </defs>
+  </svg>
+
+<script>
+"use strict";
+/* ============================================================================
+   The entire application lives in this single IIFE so it never leaks globals.
+   ============================================================================ */
+(function () {
+
+  /* --------------------------------------------------------------------------
+     CONFIG — central tunables. The cylinder appears full at MAX_SCORE.
+     -------------------------------------------------------------------------- */
+  const CONFIG = {
+    MAX_SCORE: 100,            // score at which the cylinder is visually full
+    WOTSITS_PER_POINT: 5,      // wotsits added per score point
+    DEFAULT_TEAM_COUNT: 10,    // teams seeded on first run
+    MIN_TEAMS: 2,
+    MAX_TEAMS: 12,
+    STORAGE_KEY: "wotsit-scoreboard-v1",
+    // Perf guard: cap distinct rendered wotsits per cylinder. Fill HEIGHT always
+    // tracks the exact score; if score*WPP exceeds this, visual density saturates
+    // (relevant only in extreme configs). 100*5 = 500 is allowed by default.
+    MAX_RENDERED_WOTSITS: 500,
+  };
+
+  // Distinct, projector-friendly team colours (used for name dots / swatches).
+  const TEAM_COLORS = [
+    "#ff8a1e", "#ffd23f", "#3ddc84", "#37c2ff", "#9b8cff",
+    "#ff6b9d", "#ff5b6e", "#5ee0c8", "#c0e84b", "#ff9f5e",
+    "#7ed0ff", "#e98cff",
+  ];
+
+  /* ==========================================================================
+     UTILITIES — small pure helpers shared across components.
+     ========================================================================== */
+
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+  // Deterministic PRNG (mulberry32). Seeding by wotsit index makes a wotsit's
+  // jitter/rotation/scale STABLE across re-renders so the pile never flickers.
+  function seededRandom(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Generate a short unique id for teams.
+  let __idCounter = 0;
+  const uid = () =>
+    "t" + Date.now().toString(36) + (__idCounter++).toString(36) +
+    Math.floor(Math.random() * 1e6).toString(36);
+
+  // Default team names: A, B, C … then AA, AB … (handles >26 gracefully).
+  function defaultTeamName(index) {
+    let name = "";
+    let n = index;
+    do {
+      name = String.fromCharCode(65 + (n % 26)) + name;
+      n = Math.floor(n / 26) - 1;
+    } while (n >= 0);
+    return "Team " + name;
+  }
+
+  const colorForIndex = (i) => TEAM_COLORS[i % TEAM_COLORS.length];
+
+  /* ==========================================================================
+     1) STORAGE SERVICE  — pure data layer (no DOM).
+        Loads, saves and resets state in localStorage. All access is guarded so
+        the app still runs (in-memory) when storage is unavailable (private mode
+        / quota errors).
+     ========================================================================== */
+  class StorageService {
+    constructor(key) { this.key = key; }
+
+    load() {
+      try {
+        const raw = localStorage.getItem(this.key);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (!data || !Array.isArray(data.teams)) return null;
+        // Validate + normalise each team; drop anything malformed.
+        const teams = data.teams
+          .filter((t) => t && typeof t === "object")
+          .map((t) => ({
+            id: typeof t.id === "string" && t.id ? t.id : uid(),
+            name: typeof t.name === "string" ? t.name : "Team",
+            score: clamp(Number(t.score) || 0, 0, CONFIG.MAX_SCORE),
+          }));
+        return { teams };
+      } catch (err) {
+        console.warn("[Storage] load failed:", err);
+        return null;
+      }
+    }
+
+    save(state) {
+      try {
+        const payload = JSON.stringify({
+          version: 1,
+          teams: state.teams.map((t) => ({ id: t.id, name: t.name, score: t.score })),
+        });
+        localStorage.setItem(this.key, payload);
+        return true;
+      } catch (err) {
+        console.warn("[Storage] save failed:", err);
+        return false;
+      }
+    }
+
+    reset() {
+      try { localStorage.removeItem(this.key); } catch (err) { /* ignore */ }
+    }
+  }
+
+  /* ==========================================================================
+     2) WOTSIT CYLINDER  — rendering + animation ONLY.
+        Owns the glass cylinder, measuring ticks, score readout and the layer of
+        individual wotsit puffs. Knows nothing about teams or persistence.
+
+        Core idea: a wotsit's settled position is a PURE FUNCTION of its index
+        (packed bottom-up in rows + seeded jitter). So `setScore` just diffs the
+        current vs. target wotsit count and adds/removes the difference, animating
+        only that batch. Settled wotsits are static (no running animation).
+     ========================================================================== */
+  class WotsitCylinder {
+    constructor(options = {}) {
+      this.color = options.color || "#ff8a1e";
+      this.count = 0;          // number of settled/active wotsit nodes
+      this.score = 0;
+      this.nodes = [];         // wotsit DOM elements, index-aligned to slot index
+      this._layout = null;     // cached geometry (recomputed on resize)
+      this._ro = null;         // ResizeObserver
+      this._build();
+    }
+
+    /* ---- DOM construction -------------------------------------------------- */
+    _build() {
+      const el = document.createElement("div");
+      el.className = "cyl";
+      el.innerHTML = `
+        <div class="cyl-glass" aria-hidden="true"></div>
+        <div class="cyl-fill"></div>
+        <div class="cyl-ticks" aria-hidden="true"></div>
+        <div class="cyl-score" aria-hidden="true">0</div>
+      `;
+      this.el = el;
+      this.glass = el.querySelector(".cyl-glass");
+      this.fill = el.querySelector(".cyl-fill");
+      this.ticks = el.querySelector(".cyl-ticks");
+      this.scoreEl = el.querySelector(".cyl-score");
+      this._buildTicks();
+
+      // Recompute geometry when the cylinder is resized (responsive layout).
+      if (typeof ResizeObserver !== "undefined") {
+        this._ro = new ResizeObserver(() => this._onResize());
+        this._ro.observe(el);
+      }
+    }
+
+    // Build the side measuring marks (every 10% major w/ label, 5% minor).
+    _buildTicks() {
+      const frag = document.createDocumentFragment();
+      for (let pct = 0; pct <= 100; pct += 5) {
+        const major = pct % 20 === 0;
+        const tick = document.createElement("div");
+        tick.className = "tick " + (major ? "major" : "minor");
+        // y measured from top; 0% score sits at the bottom.
+        tick.style.bottom = pct + "%";
+        tick.style.top = "auto";
+        frag.appendChild(tick);
+        if (major && pct !== 0) {
+          const label = document.createElement("div");
+          label.className = "tick-label";
+          label.style.bottom = pct + "%";
+          label.textContent = Math.round((pct / 100) * CONFIG.MAX_SCORE);
+          frag.appendChild(label);
+        }
+      }
+      this.ticks.appendChild(frag);
+    }
+
+    /* ---- Geometry / packing ----------------------------------------------- */
+    // Compute how wotsits tile the inner fill area, in pixels.
+    _computeLayout() {
+      const rect = this.fill.getBoundingClientRect();
+      const W = rect.width || 120;
+      const H = rect.height || 320;
+
+      // Wotsit size scales with cylinder width so it always looks right.
+      const wsz = clamp(W * 0.26, 12, 30);          // long axis (px)
+      const wH = wsz * 0.64;                         // short axis (px)
+
+      const padX = wsz * 0.18;
+      const colWidth = wsz * 0.92;                   // overlap slightly → dense pile
+      const perRow = Math.max(1, Math.floor((W - padX * 2) / colWidth));
+      const usedW = perRow * colWidth;
+      const startX = (W - usedW) / 2 + (colWidth - wsz) / 2;
+
+      const rowHeight = wH * 0.78;                   // overlap rows for a packed look
+
+      // Rows needed for a completely full cylinder (MAX_SCORE).
+      const maxWotsits = Math.min(
+        CONFIG.MAX_SCORE * CONFIG.WOTSITS_PER_POINT,
+        CONFIG.MAX_RENDERED_WOTSITS
+      );
+      const maxRows = Math.ceil(maxWotsits / perRow);
+
+      // Scale row height so the full pile fits exactly within the cylinder height
+      // (minus a small top margin), guaranteeing "full at MAX_SCORE".
+      const topMargin = H * 0.04;
+      const availH = H - topMargin - wH;
+      const rowH = maxRows > 1 ? Math.min(rowHeight, availH / (maxRows - 1)) : rowHeight;
+
+      this._layout = {
+        W, H, wsz, wH, perRow, colWidth, startX, rowH,
+        bottomPad: H - wH * 0.92, // y (top-based) of the bottom row
+      };
+      return this._layout;
+    }
+
+    _ensureLayout() {
+      if (!this._layout) this._computeLayout();
+      return this._layout;
+    }
+
+    // Deterministic slot (settled transform values) for a given wotsit index.
+    slotFor(index) {
+      const L = this._ensureLayout();
+      const rnd = seededRandom(index * 2654435761 + 17);
+      const row = Math.floor(index / L.perRow);
+      const col = index % L.perRow;
+
+      const jitterX = (rnd() - 0.5) * L.colWidth * 0.5;
+      const jitterY = (rnd() - 0.5) * L.rowH * 0.7;
+      const x = L.startX + col * L.colWidth + jitterX;
+      const y = L.bottomPad - row * L.rowH + jitterY;
+
+      const rot = (rnd() - 0.5) * 80;                 // -40°..40°
+      const scale = 0.82 + rnd() * 0.4;               // 0.82..1.22
+      // Slight tint variation for a natural pile.
+      const hueShift = rnd();
+      return { x, y, rot, scale, hueShift, wsz: L.wsz };
+    }
+
+    /* ---- Public API -------------------------------------------------------- */
+    // Set the score and reconcile the wotsit pile. `animate` controls whether the
+    // difference pours in / pops out (used on load → instant).
+    setScore(score, { animate = true } = {}) {
+      score = clamp(Math.round(score), 0, CONFIG.MAX_SCORE);
+      this.score = score;
+      this._updateScoreReadout(animate);
+
+      const target = Math.min(
+        Math.round(score * CONFIG.WOTSITS_PER_POINT),
+        CONFIG.MAX_RENDERED_WOTSITS
+      );
+
+      if (target > this.count) this._addWotsits(this.count, target, animate);
+      else if (target < this.count) this._removeWotsits(target, this.count, animate);
+      this.count = target;
+    }
+
+    _updateScoreReadout(animate) {
+      this.scoreEl.textContent = String(this.score);
+      if (animate) {
+        this.scoreEl.classList.remove("bump");
+        // force reflow to restart the transition
+        void this.scoreEl.offsetWidth;
+        this.scoreEl.classList.add("bump");
+        clearTimeout(this._bumpT);
+        this._bumpT = setTimeout(() => this.scoreEl.classList.remove("bump"), 180);
+      }
+    }
+
+    _styleWotsit(node, slot) {
+      // Per-wotsit tint variation around the brand orange.
+      const hi = slot.hueShift > 0.5 ? "#ffd29a" : "#ffc282";
+      const lo = slot.hueShift > 0.5 ? "#ff8a1e" : "#ff7510";
+      const hi2 = slot.hueShift > 0.5 ? "#ef6a00" : "#e05600";
+      node.style.setProperty("--wsz", slot.wsz + "px");
+      node.style.setProperty("--x", slot.x + "px");
+      node.style.setProperty("--y", slot.y + "px");
+      node.style.setProperty("--rot", slot.rot + "deg");
+      node.style.setProperty("--s", slot.scale.toFixed(3));
+      node.style.setProperty("--w-hi", hi);
+      node.style.setProperty("--w-lo", lo);
+      node.style.setProperty("--w-hi2", hi2);
+    }
+
+    _addWotsits(from, to, animate) {
+      const L = this._ensureLayout();
+      const frag = document.createDocumentFragment();
+      const batch = to - from;
+      for (let i = from; i < to; i++) {
+        const slot = this.slotFor(i);
+        const node = document.createElement("div");
+        node.className = "wotsit";
+        this._styleWotsit(node, slot);
+
+        if (animate) {
+          // Start above the cylinder, then drop+bounce to the settled slot.
+          node.style.setProperty("--from-y", (-L.wH * 2.5 - Math.random() * 40) + "px");
+          // Stagger within the batch for a satisfying "pour".
+          const delay = (i - from) * 45;
+          node.style.setProperty("--delay", delay + "ms");
+          node.style.setProperty("--drop-dur", (560 + Math.random() * 160).toFixed(0) + "ms");
+          node.classList.add("dropping");
+          const onEnd = () => {
+            node.classList.remove("dropping");
+            node.classList.add("settled");   // drops will-change → frees GPU layer
+            node.removeEventListener("animationend", onEnd);
+          };
+          node.addEventListener("animationend", onEnd);
+        } else {
+          node.classList.add("settled");
+        }
+        this.nodes[i] = node;
+        frag.appendChild(node);
+      }
+      this.fill.appendChild(frag);
+    }
+
+    _removeWotsits(from, to, animate) {
+      // Remove the top-most wotsits (highest indices) first.
+      for (let i = to - 1; i >= from; i--) {
+        const node = this.nodes[i];
+        this.nodes[i] = undefined;
+        if (!node) continue;
+        if (animate) {
+          node.classList.remove("settled");
+          node.classList.add("removing");
+          const onEnd = () => { node.remove(); };
+          node.addEventListener("animationend", onEnd, { once: true });
+          // Safety net in case animationend doesn't fire.
+          setTimeout(() => node.remove(), 400);
+        } else {
+          node.remove();
+        }
+      }
+      this.nodes.length = from;
+    }
+
+    // On resize, geometry changes → re-place every settled wotsit instantly.
+    _onResize() {
+      const prevPerRow = this._layout && this._layout.perRow;
+      this._computeLayout();
+      if (this._layout.perRow === prevPerRow && this._layout.W) {
+        // perRow unchanged: positions barely move; still refresh to stay exact.
+      }
+      for (let i = 0; i < this.nodes.length; i++) {
+        const node = this.nodes[i];
+        if (!node) continue;
+        const slot = this.slotFor(i);
+        this._styleWotsit(node, slot);
+      }
+    }
+
+    destroy() {
+      if (this._ro) { this._ro.disconnect(); this._ro = null; }
+      clearTimeout(this._bumpT);
+      this.nodes.length = 0;
+      this.el.remove();
+    }
+  }
+
+  /* ==========================================================================
+     3) TEAM CARD  — rendering for a single team.
+        Shows team name, score readout (inside the cylinder), a WotsitCylinder,
+        and large +/- buttons. Emits score deltas through a callback; it does not
+        mutate shared state directly (that's the Scoreboard's job).
+     ========================================================================== */
+  class TeamCard {
+    constructor(team, index, handlers) {
+      this.team = team;                 // { id, name, score }
+      this.index = index;
+      this.handlers = handlers;         // { onDelta(id, delta) }
+      this.color = colorForIndex(index);
+      this._build();
+    }
+
+    _build() {
+      const el = document.createElement("div");
+      el.className = "card";
+      el.style.setProperty("--team-color", this.color);
+
+      // Name
+      const name = document.createElement("div");
+      name.className = "card-name";
+      name.innerHTML = `<span class="dot"></span><span class="label"></span>`;
+      name.querySelector(".label").textContent = this.team.name;
+      this.nameLabel = name.querySelector(".label");
+
+      // Cylinder
+      this.cylinder = new WotsitCylinder({ color: this.color });
+
+      // Controls
+      const controls = document.createElement("div");
+      controls.className = "controls";
+
+      const minus = document.createElement("button");
+      minus.className = "score-btn minus";
+      minus.type = "button";
+      minus.textContent = "−";
+      minus.setAttribute("aria-label", "Remove a point from " + this.team.name);
+
+      const plus = document.createElement("button");
+      plus.className = "score-btn plus";
+      plus.type = "button";
+      plus.textContent = "+";
+      plus.setAttribute("aria-label", "Add a point to " + this.team.name);
+
+      controls.append(minus, plus);
+      this.minusBtn = minus;
+      this.plusBtn = plus;
+
+      // Wire events (click works for both mouse and touch; touch-action set in CSS).
+      minus.addEventListener("click", () => this.handlers.onDelta(this.team.id, -1));
+      plus.addEventListener("click", () => this.handlers.onDelta(this.team.id, +1));
+
+      el.append(name, this.cylinder.el, controls);
+      this.el = el;
+
+      // Initial fill is instant (no pour animation on first paint / reload).
+      // Defer to next frame so the cylinder has measurable dimensions.
+      requestAnimationFrame(() => {
+        this.cylinder.setScore(this.team.score, { animate: false });
+        this._syncButtons();
+      });
+    }
+
+    // Reflect a new score (called by Scoreboard after it mutates state).
+    update(score, animate = true) {
+      this.team.score = score;
+      this.cylinder.setScore(score, { animate });
+      this._syncButtons();
+    }
+
+    setName(name) {
+      this.team.name = name;
+      this.nameLabel.textContent = name;
+      this.minusBtn.setAttribute("aria-label", "Remove a point from " + name);
+      this.plusBtn.setAttribute("aria-label", "Add a point to " + name);
+    }
+
+    // Disable +/- at the score bounds.
+    _syncButtons() {
+      this.minusBtn.disabled = this.team.score <= 0;
+      this.plusBtn.disabled = this.team.score >= CONFIG.MAX_SCORE;
+    }
+
+    destroy() {
+      this.cylinder.destroy();
+      this.el.remove();
+    }
+  }
+
+  /* ==========================================================================
+     4) SCOREBOARD  — controller + layout. The single source of truth.
+        Holds state.teams, persists via StorageService, lays cards out in exactly
+        two rows, and owns the management panel, fullscreen and global controls.
+     ========================================================================== */
+  class Scoreboard {
+    constructor(root, storage) {
+      this.root = root;
+      this.storage = storage;
+      this.state = { teams: [] };
+      this.cards = new Map();          // id → TeamCard
+      this._saveTimer = null;
+
+      // Load persisted state or seed defaults on first run.
+      const loaded = this.storage.load();
+      if (loaded && loaded.teams.length) {
+        this.state.teams = loaded.teams;
+      } else {
+        this._seedDefaults();
+      }
+
+      this._buildChrome();
+      this.renderBoard();
+      this._wireGlobalKeys();
+    }
+
+    _seedDefaults() {
+      const n = clamp(CONFIG.DEFAULT_TEAM_COUNT, CONFIG.MIN_TEAMS, CONFIG.MAX_TEAMS);
+      this.state.teams = [];
+      for (let i = 0; i < n; i++) {
+        this.state.teams.push({ id: uid(), name: defaultTeamName(i), score: 0 });
+      }
+    }
+
+    /* ---- Persistence (debounced) ------------------------------------------ */
+    _persist(immediate = false) {
+      clearTimeout(this._saveTimer);
+      if (immediate) { this.storage.save(this.state); return; }
+      this._saveTimer = setTimeout(() => this.storage.save(this.state), 250);
+    }
+
+    /* ---- Top bar + management panel --------------------------------------- */
+    _buildChrome() {
+      // Top bar
+      const bar = document.createElement("div");
+      bar.className = "topbar";
+      bar.innerHTML = `
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><use href="#i-wotsit"/></svg>
+          <span>Wotsit <b>Scoreboard</b></span>
+        </div>
+        <div class="spacer"></div>
+        <button class="bar-btn ghost" data-act="toggle-panel" aria-expanded="true">⚙︎ <span class="full">Manage</span></button>
+        <button class="bar-btn ghost" data-act="fullscreen">⛶ <span class="full">Fullscreen</span></button>
+      `;
+      this.bar = bar;
+
+      // Management panel
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.innerHTML = `
+        <div class="panel-inner">
+          <div class="panel-row">
+            <h3>Teams</h3>
+            <button class="bar-btn accent" data-act="add-team">＋ Add team</button>
+            <button class="bar-btn" data-act="reset-scores">↺ Reset all scores</button>
+            <span class="hint" data-role="count"></span>
+          </div>
+          <div class="panel-row">
+            <div class="team-admin-list" data-role="admin-list"></div>
+          </div>
+        </div>
+      `;
+      this.panel = panel;
+      this.adminList = panel.querySelector('[data-role="admin-list"]');
+      this.countHint = panel.querySelector('[data-role="count"]');
+
+      // Board container with two rows.
+      const board = document.createElement("div");
+      board.className = "board";
+      board.innerHTML = `<div class="team-row" data-row="0"></div><div class="team-row" data-row="1"></div>`;
+      this.board = board;
+      this.rows = [board.querySelector('[data-row="0"]'), board.querySelector('[data-row="1"]')];
+
+      this.root.append(bar, panel, board);
+
+      // Delegate top-bar + panel clicks.
+      bar.addEventListener("click", (e) => this._onChromeClick(e));
+      panel.addEventListener("click", (e) => this._onChromeClick(e));
+    }
+
+    _onChromeClick(e) {
+      const btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      const act = btn.getAttribute("data-act");
+      if (act === "toggle-panel") this.togglePanel();
+      else if (act === "fullscreen") this.toggleFullscreen();
+      else if (act === "add-team") this.addTeam();
+      else if (act === "reset-scores") this.resetScores();
+      else if (act === "delete-team") this.removeTeam(btn.getAttribute("data-id"));
+    }
+
+    /* ---- Board layout: exactly two rows ----------------------------------- */
+    // Split teams so row 1 holds ceil(N/2) and row 2 holds the rest.
+    renderBoard() {
+      // Tear down existing cards.
+      this.cards.forEach((c) => c.destroy());
+      this.cards.clear();
+      this.rows[0].innerHTML = "";
+      this.rows[1].innerHTML = "";
+
+      const teams = this.state.teams;
+      if (teams.length === 0) {
+        this.board.innerHTML = `
+          <div class="empty-state">
+            <h2>No teams yet</h2>
+            <p>Open <strong>Manage</strong> and add a team to get started.</p>
+          </div>`;
+        // Re-acquire row refs next time teams exist.
+        this._renderAdminList();
+        return;
+      }
+
+      // Ensure the two-row scaffold exists (it may have been replaced by empty-state).
+      if (!this.board.querySelector('[data-row="0"]')) {
+        this.board.innerHTML =
+          `<div class="team-row" data-row="0"></div><div class="team-row" data-row="1"></div>`;
+        this.rows = [
+          this.board.querySelector('[data-row="0"]'),
+          this.board.querySelector('[data-row="1"]'),
+        ];
+      }
+
+      const firstRowCount = Math.ceil(teams.length / 2);
+      teams.forEach((team, i) => {
+        const card = new TeamCard(team, i, { onDelta: (id, d) => this.changeScore(id, d) });
+        this.cards.set(team.id, card);
+        const rowEl = i < firstRowCount ? this.rows[0] : this.rows[1];
+        rowEl.appendChild(card.el);
+      });
+
+      this._renderAdminList();
+    }
+
+    // The management list of editable team names + delete buttons.
+    _renderAdminList() {
+      this.adminList.innerHTML = "";
+      this.state.teams.forEach((team, i) => {
+        const row = document.createElement("div");
+        row.className = "team-admin";
+        const color = colorForIndex(i);
+        row.innerHTML = `
+          <span class="swatch" style="background:${color}"></span>
+          <input type="text" value="" aria-label="Team name" />
+          <button class="icon-btn" data-act="delete-team" data-id="${team.id}" aria-label="Delete team">✕</button>
+        `;
+        const input = row.querySelector("input");
+        input.value = team.name;
+        input.addEventListener("input", () => this.renameTeam(team.id, input.value));
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+        this.adminList.appendChild(row);
+      });
+      this.countHint.textContent =
+        `${this.state.teams.length} / ${CONFIG.MAX_TEAMS} teams`;
+      this._syncAdminButtons();
+    }
+
+    _syncAdminButtons() {
+      const addBtn = this.panel.querySelector('[data-act="add-team"]');
+      if (addBtn) addBtn.disabled = this.state.teams.length >= CONFIG.MAX_TEAMS;
+      // Prevent deleting below MIN_TEAMS.
+      const delBtns = this.adminList.querySelectorAll('[data-act="delete-team"]');
+      const lockDelete = this.state.teams.length <= CONFIG.MIN_TEAMS;
+      delBtns.forEach((b) => (b.disabled = lockDelete));
+    }
+
+    /* ---- Business logic: scoring, teams, reset ---------------------------- */
+    changeScore(id, delta) {
+      const team = this.state.teams.find((t) => t.id === id);
+      if (!team) return;
+      const next = clamp(team.score + delta, 0, CONFIG.MAX_SCORE);
+      if (next === team.score) return;       // at a bound → no-op
+      team.score = next;
+      const card = this.cards.get(id);
+      if (card) card.update(next, true);
+      this._persist();
+    }
+
+    addTeam() {
+      if (this.state.teams.length >= CONFIG.MAX_TEAMS) return;
+      const idx = this.state.teams.length;
+      this.state.teams.push({ id: uid(), name: defaultTeamName(idx), score: 0 });
+      this.renderBoard();          // re-layout (row split may change)
+      this._persist(true);
+    }
+
+    removeTeam(id) {
+      if (this.state.teams.length <= CONFIG.MIN_TEAMS) return;
+      const i = this.state.teams.findIndex((t) => t.id === id);
+      if (i === -1) return;
+      this.state.teams.splice(i, 1);
+      this.renderBoard();
+      this._persist(true);
+    }
+
+    renameTeam(id, name) {
+      const team = this.state.teams.find((t) => t.id === id);
+      if (!team) return;
+      team.name = name;
+      const card = this.cards.get(id);
+      if (card) card.setName(name);
+      this._persist();
+    }
+
+    resetScores() {
+      this.state.teams.forEach((t) => (t.score = 0));
+      this.cards.forEach((card) => card.update(0, true));
+      this._persist(true);
+    }
+
+    /* ---- Panel collapse / fullscreen -------------------------------------- */
+    togglePanel() {
+      const collapsed = this.panel.classList.toggle("collapsed");
+      const btn = this.bar.querySelector('[data-act="toggle-panel"]');
+      if (btn) btn.setAttribute("aria-expanded", String(!collapsed));
+    }
+
+    toggleFullscreen() {
+      try {
+        if (!document.fullscreenElement) {
+          (document.documentElement.requestFullscreen ||
+           document.documentElement.webkitRequestFullscreen).call(document.documentElement);
+        } else {
+          (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        }
+      } catch (err) {
+        console.warn("[Fullscreen] not available:", err);
+      }
+    }
+
+    // Keyboard convenience: Enter on a focused +/- already works; add Esc to
+    // reveal the panel if hidden, and "f" for fullscreen.
+    _wireGlobalKeys() {
+      document.addEventListener("keydown", (e) => {
+        const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
+        if (typing) return;
+        if (e.key.toLowerCase() === "f") this.toggleFullscreen();
+        else if (e.key.toLowerCase() === "m") this.togglePanel();
+      });
+    }
+  }
+
+  /* ==========================================================================
+     BOOT — wait for DOM, then start the Scoreboard.
+     ========================================================================== */
+  function boot() {
+    const root = document.getElementById("app");
+    const storage = new StorageService(CONFIG.STORAGE_KEY);
+    const app = new Scoreboard(root, storage);
+    // Expose for debugging/testing in the console (non-essential).
+    window.__wotsit = { app, CONFIG };
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
