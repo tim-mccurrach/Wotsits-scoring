@@ -610,6 +610,91 @@
       align-items: start;
     }
   }
+
+  /* ===========================================================================
+     MOBILE / NARROW LAYOUT
+     The desktop layout forces every team onto one of two fixed-height rows.
+     On phones that crams 5+ cylinders into one line and the beakers, name pills
+     and +/- buttons overlap. Here we let the page scroll and let cards wrap into
+     a responsive grid so each card always has enough room.
+     =========================================================================== */
+  @media (max-width: 760px) {
+    /* Let the page grow and scroll instead of being locked to one screen. */
+    body { overflow-y: auto; }
+    .stage {
+      height: auto;
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+
+    .board { flex: 1 1 auto; }
+
+    /* Rows size to their content and let cards wrap onto multiple lines. */
+    .team-row {
+      flex: 0 0 auto;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: center;
+      gap: clamp(10px, 4vw, 18px);
+      overflow: visible;          /* don't clip wrapped cards */
+      padding: 22px clamp(10px, 3vw, 18px) 26px;
+    }
+    /* The decorative shelf assumes a single row of cards; hide it once cards
+       wrap so it doesn't slice through the middle of the grid. */
+    .team-row::before,
+    .team-row::after { display: none; }
+
+    /* Two cards per line, each with a comfortable minimum width so the
+       cylinder, name and buttons never get crushed or overlap. */
+    .card {
+      flex: 1 1 calc(50% - 18px);
+      min-width: 132px;
+      max-width: none;
+      gap: 8px;
+      padding-top: 6px;
+    }
+    .card::before { display: none; }
+
+    /* Rows are no longer a fixed height, so give the cylinder an explicit one.
+       Width tracks the card (with a cap) so two cards always fit per line. */
+    .cyl {
+      flex: 0 0 auto;
+      width: 100%;
+      max-width: 120px;
+      height: clamp(180px, 34vh, 280px);
+    }
+
+    /* Stack the name above the +/- buttons so the pill never collides with
+       them on a narrow card. The controls row wraps: the full-width name forces
+       a line break, leaving the two buttons side by side beneath it. */
+    .controls {
+      flex-wrap: wrap;
+      row-gap: 8px;
+      column-gap: 14px;
+    }
+    .card-name {
+      order: -1;
+      flex: 1 1 100%;
+      width: 100%;
+      max-width: 100%;
+      font-size: clamp(13px, 3.4vw, 17px);
+    }
+    .score-btn {
+      width: 46px;
+      height: 46px;
+      font-size: 28px;
+    }
+  }
+
+  /* Phones: drop to a single column so the cylinders, names and buttons all
+     have room and never overlap or get clipped at the edge. */
+  @media (max-width: 480px) {
+    .card {
+      flex: 0 0 100%;
+      min-width: 0;
+    }
+    .cyl { max-width: 170px; height: clamp(200px, 38vh, 300px); }
+  }
 </style>
 </head>
 <body>
