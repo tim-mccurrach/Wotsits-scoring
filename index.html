@@ -255,10 +255,6 @@
     background: #fff8ea; border: 1px solid #e0b477;
     border-radius: 999px; padding: 6px 8px;
   }
-  .team-admin .swatch {
-    width: 12px; height: 12px; border-radius: 50%;
-    box-shadow: 0 0 0 2px #0004 inset;
-  }
   .team-admin input {
     width: 110px; background: transparent; border: none; color: var(--ink);
     font-family: inherit; font-size: 14px; font-weight: 700; padding: 4px 2px;
@@ -381,11 +377,12 @@
     z-index: 1;
   }
   .card-name {
+    flex: 0 1 auto;
+    min-width: 0;
     font-weight: 800;
-    font-size: clamp(14px, 1.5vw, 24px);
+    font-size: clamp(13px, 1.3vw, 20px);
     letter-spacing: .2px;
     text-align: center;
-    max-width: 100%;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     color: var(--ink);
     padding: .32em .68em .38em;
@@ -396,25 +393,20 @@
       0 3px 0 #d29a55,
       0 7px 12px rgba(121, 66, 20, .12);
   }
-  .card-name .dot {
-    display: inline-block; width: .62em; height: .62em; border-radius: 50%;
-    margin-right: .4em; vertical-align: baseline;
-    box-shadow: 0 0 0 2px #fff7 inset, 0 0 10px var(--team-color, var(--accent));
-    background: var(--team-color, var(--accent));
-  }
 
-  /* ── Controls (the +/- buttons) ────────────────────────────────────────── */
+  /* ── Controls (the +/- buttons + name, all on one row below the cylinder) ─ */
   .controls {
     display: flex; align-items: center; justify-content: center;
-    gap: clamp(8px, 1vw, 16px);
+    gap: clamp(6px, .8vw, 12px);
     width: 100%;
   }
   .score-btn {
     appearance: none; cursor: pointer; border: none;
-    width: clamp(42px, 4vw, 64px);
-    height: clamp(42px, 4vw, 64px);
+    flex: 0 0 auto;
+    width: clamp(36px, 3.2vw, 52px);
+    height: clamp(36px, 3.2vw, 52px);
     border-radius: 50%;
-    font-size: clamp(26px, 2.6vw, 40px);
+    font-size: clamp(22px, 2.1vw, 34px);
     font-weight: 900; line-height: 1;
     display: grid; place-items: center;
     color: #fff;
@@ -641,7 +633,7 @@
     MAX_RENDERED_WOTSITS: 500,
   };
 
-  // Distinct, projector-friendly team colours (used for name dots / swatches).
+  // Distinct, projector-friendly team colours (kept for potential future use).
   const TEAM_COLORS = [
     "#ff8a1e", "#ffd23f", "#3ddc84", "#37c2ff", "#9b8cff",
     "#ff6b9d", "#ff5b6e", "#5ee0c8", "#c0e84b", "#ff9f5e",
@@ -1003,19 +995,11 @@
     _build() {
       const el = document.createElement("div");
       el.className = "card";
-      el.style.setProperty("--team-color", this.color);
 
-      // Name
-      const name = document.createElement("div");
-      name.className = "card-name";
-      name.innerHTML = `<span class="dot"></span><span class="label"></span>`;
-      name.querySelector(".label").textContent = this.team.name;
-      this.nameLabel = name.querySelector(".label");
-
-      // Cylinder
+      // Cylinder (the main feature — gets the most space)
       this.cylinder = new WotsitCylinder({ color: this.color });
 
-      // Controls
+      // Controls row below the cylinder: [−]  Team name  [+]
       const controls = document.createElement("div");
       controls.className = "controls";
 
@@ -1025,13 +1009,19 @@
       minus.textContent = "−";
       minus.setAttribute("aria-label", "Remove a point from " + this.team.name);
 
+      // Name sits inline between the +/- buttons.
+      const name = document.createElement("div");
+      name.className = "card-name";
+      name.textContent = this.team.name;
+      this.nameLabel = name;
+
       const plus = document.createElement("button");
       plus.className = "score-btn plus";
       plus.type = "button";
       plus.textContent = "+";
       plus.setAttribute("aria-label", "Add a point to " + this.team.name);
 
-      controls.append(minus, plus);
+      controls.append(minus, name, plus);
       this.minusBtn = minus;
       this.plusBtn = plus;
 
@@ -1039,7 +1029,7 @@
       minus.addEventListener("click", () => this.handlers.onDelta(this.team.id, -1));
       plus.addEventListener("click", () => this.handlers.onDelta(this.team.id, +1));
 
-      el.append(name, this.cylinder.el, controls);
+      el.append(this.cylinder.el, controls);
       this.el = el;
 
       // Initial fill is instant (no pour animation on first paint / reload).
@@ -1248,9 +1238,7 @@
       this.state.teams.forEach((team, i) => {
         const row = document.createElement("div");
         row.className = "team-admin";
-        const color = colorForIndex(i);
         row.innerHTML = `
-          <span class="swatch" style="background:${color}"></span>
           <input type="text" value="" aria-label="Team name" />
           <button class="icon-btn" data-act="delete-team" data-id="${team.id}" aria-label="Delete team">✕</button>
         `;
