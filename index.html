@@ -72,40 +72,57 @@
     font-family: var(--font);
     color: var(--ink);
     position: relative;
-    background:
-      radial-gradient(900px 460px at 18% -10%, #ffe49f 0%, #ffe49f00 62%),
-      radial-gradient(760px 430px at 92% 2%, #ffcf8a88 0%, #ffcf8a00 64%),
-      linear-gradient(180deg, #fff8e9 0%, var(--bg-0) 42%, var(--bg-1) 100%),
-      var(--bg-1);
+    background: var(--bg-1);
     overflow: hidden;                 /* the stage manages its own layout */
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
+
+  /* ===========================================================================
+     KITCHEN BACKDROP — a playful, CSS-only kitchen scene drawn behind the board.
+     It is heavily blurred and over-saturated so it reads as a warm, fun setting
+     without competing with the cylinders for attention.
+
+     ::before  → the wall + window + tiled splashback + countertop + utensils.
+     ::after   → a soft light bloom + gentle vignette to push it back further.
+     =========================================================================== */
   body::before {
     content: "";
     position: fixed;
-    inset: 0 0 auto;
-    height: clamp(68px, 12vh, 128px);
+    inset: -8%;                        /* over-bleed so the blur has no hard edge */
+    z-index: 0;
     pointer-events: none;
     background:
-      linear-gradient(135deg, #ff8a1e 0 49%, transparent 50%) 4% 12px / 68px 52px repeat-x,
-      linear-gradient(225deg, #37c2ff 0 49%, transparent 50%) 16% 12px / 68px 52px repeat-x,
-      linear-gradient(135deg, #3ddc84 0 49%, transparent 50%) 28% 12px / 68px 52px repeat-x,
-      linear-gradient(225deg, #ff6b9d 0 49%, transparent 50%) 40% 12px / 68px 52px repeat-x;
-    opacity: .26;
-    z-index: 0;
+      /* — hanging utensils silhouettes (whisk / spoon / spatula heads) — */
+      radial-gradient(circle at 50% 0, #b9692420 0 18px, transparent 19px) 12% 8% / 60px 90px no-repeat,
+      radial-gradient(circle at 50% 0, #a85c1e22 0 14px, transparent 15px) 20% 7% / 60px 80px no-repeat,
+      /* — potted herb on the sill — */
+      radial-gradient(circle at 50% 100%, #4fb15e55 0 28px, transparent 30px) 78% 41% / 90px 70px no-repeat,
+      radial-gradient(ellipse at 50% 100%, #c8762e66 0 26px, transparent 28px) 78% 47% / 64px 60px no-repeat,
+      /* — sunny window with crossbars, top-right — */
+      linear-gradient(#ffffff44, #ffffff44) 80% 12% / 2px 150px no-repeat,
+      linear-gradient(#ffffff44, #ffffff44) 80% 19% / 220px 2px no-repeat,
+      radial-gradient(150% 120% at 80% 14%, #bfe9ff 0%, #9fd9ff 38%, #cdeffd00 60%) no-repeat,
+      /* — countertop slab across the lower third — */
+      linear-gradient(180deg, #d9a066 0 2px, #e9bd86 2px 5px, #d49a5e 5px) 0 70% / 100% 30% no-repeat,
+      /* — tiled splashback band above the counter — */
+      repeating-linear-gradient(90deg, #fff4e0 0 46px, #f3d9b0 46px 48px) 0 56% / 100% 14% no-repeat,
+      repeating-linear-gradient(0deg, #fff4e0 0 46px, #f3d9b0 46px 48px) 0 56% / 100% 14% no-repeat,
+      /* — warm painted wall base — */
+      linear-gradient(180deg, #ffedcf 0%, #ffe0b0 55%, #f6cf97 100%);
+    /* the magic: blur + crank the saturation for a fun, dreamy kitchen */
+    filter: blur(14px) saturate(1.55) brightness(1.04);
+    transform: scale(1.04);            /* hide blurred edges */
   }
   body::after {
     content: "";
     position: fixed;
     inset: 0;
-    pointer-events: none;
-    background-image:
-      radial-gradient(circle at 20px 20px, rgba(255, 138, 30, .12) 0 2px, transparent 2.6px),
-      radial-gradient(circle at 62px 54px, rgba(55, 194, 255, .10) 0 2px, transparent 2.6px);
-    background-size: 92px 82px;
-    mask-image: linear-gradient(180deg, #000 0%, #0008 35%, transparent 82%);
     z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(120% 80% at 80% 10%, rgba(255,247,214,.55), transparent 55%),
+      radial-gradient(140% 120% at 50% 120%, rgba(120,64,18,.22), transparent 60%);
   }
 
   /* Utility: visually hidden but available to screen readers */
@@ -1115,7 +1132,7 @@
       bar.innerHTML = `
         <div class="brand">
           <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><use href="#i-wotsit"/></svg>
-          <span>Emmanuel Day <b>Wotsit</b> Inferred Number Agrigator</span>
+          <span>Emmanuel Day <b>Wotsit</b> Inferred Number Aggregator</span>
         </div>
         <div class="spacer"></div>
         <button class="bar-btn ghost" data-act="open-team-modal" aria-haspopup="dialog" aria-expanded="false" aria-controls="team-management-modal">⚙︎ <span class="full">Teams</span></button>
